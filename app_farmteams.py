@@ -4,10 +4,74 @@ import re
 import math
 import json
 import time
+from datetime import datetime, timedelta
+
 import requests
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+import gspread
+from google.oauth2.service_account import Credentials
+
+# --------------------------- Google Sheets config ---------------------------
+SERVICE_ACCOUNT_FILE = "service_account.json"
+GSHEET_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+@st.cache_resource
+def get_gsheet_client():
+    creds = Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=GSHEET_SCOPES
+    )
+    return gspread.authorize(creds)
+
+
+def append_log_row(sheet_id: str, boonie: str, x: int, y: int, arrival_dt: datetime):
+    """Append a log row (boonie, x, y, arrival_time) to the 'log' sheet."""
+    client = get_gsheet_client()
+    sh = client.open_by_key(sheet_id)
+    ws = sh.worksheet("log")
+    ws.append_row(
+        [boonie, x, y, arrival_dt.strftime("%Y-%m-%d %H:%M:%S")],
+        value_input_option="USER_ENTERED",
+    )
+
+
+def get_active_targets(sheet_id: str, boonie: str):
+    """
+    Read the 'log' sheet and return a set of (x, y) pairs for this boonie
+    where the arrival_time is still in the future (arrival > now).
+    """
+    try:
+        client = get_gsheet_client()
+        sh = client.open_by_key(sheet_id)
+        ws = sh.worksheet("log")
+        rows = ws.get_all_values()
+    except Exception as e:
+        # If log sheet doesn't exist or can't be read, just treat as no active targets
+        return set()
+
+    now = datetime.now()
+    active = set()
+
+    # Assume row 0 might be header; just try parsing from row 1 onwards
+    for row in rows[1:]:
+        if len(row) < 4:
+            continue
+        b, sx, sy, sat = row[0], row[1], row[2], row[3]
+        if b != boonie:
+            continue
+        try:
+            x = int(sx)
+            y = int(sy)
+            arrival = datetime.strptime(sat, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+
+        if arrival > now:
+            active.add((x, y))
+
+    return active
 
 # --------------------------- Constants & data ---------------------------
 unit_mapping = {
@@ -32,17 +96,13 @@ club_atk = 40
 tk_cost = 1525
 club_cost = 250
 
-# default server for map scrape & for link build
 DEFAULT_SERVER = 'ts6.x1.europe.travian.com'
 
-# boonie -> (x_vil, y_vil) and village id for link build
 BOONIE_COORDS = {'C01': (-7, -90), 'C02': (133, -162), 'C03': (198, 47)}
 BOONIE_VILIDS = {'C01': 42069, 'C02': 68319, 'C03': 72888}
 
-# Google Sheet cookie (same as your other scripts). You can paste manually too.
 DEFAULT_SHEET_ID = "1Ev6h8-rTbCHoK2vNEyYpBSVs4AvJ43XzPQ3CuC6sTSw"
 DEFAULT_SHEET_NAME = "cookie"
-
 
 # --------------------------- Core functions ---------------------------
 def get_cost(hp_lost, nclubs, ntk):
@@ -61,7 +121,6 @@ def get_res_gained(animals, hp_lost):
 
 
 def get_calculation_result(animals, nclub, ntk):
-    # returns hp lost (fraction)
     inf_atk = club_atk * nclub
     cav_atk = tk_atk * ntk
     inf_def = np.sum([a * d for a, d in zip(animals, animal_inf_def)])
@@ -116,7 +175,7 @@ def get_best_team(animals, max_clubs=500, max_ntk=20):
     if not best_points:
         return None
 
-    final_best = min(best_points, key=lambda x: x[3])  # lowest team_cost among top-10
+    final_best = min(best_points, key=lambda x: x[3])
     return final_best
 
 
@@ -223,7 +282,7 @@ def get_nodeid(x, y):
 def build_url(x, y, boonie, nclub, ntk):
     starting_part = r"https://ts6.x1.europe.travian.com/build.php?"
     village_id = BOONIE_VILIDS[boonie]
-    troop_part = f"tt=2&troop%5Bt1%5D={nclub}&troop%5Bt6%5D={ntk}&"
+    troop_part = f"tt=2&troop%5Bt1%5D={nclub}&troop%5Bt3%5D={ntk}&"
     node_id = get_nodeid(x, y)
     return (
         f"{starting_part}"
@@ -234,15 +293,13 @@ def build_url(x, y, boonie, nclub, ntk):
 
 
 def adapt_unit_counts(unit_counts, distance, speed):
-    # use last non-zero unit to determine spawn rate
     last_non_zero_index = len(unit_counts) - 1
     for i in range(len(unit_counts) - 1, -1, -1):
         if unit_counts[i] != 0:
             last_non_zero_index = i
             break
-    spawn_rate = spawn_rates[last_non_zero_index]  # minutes per spawn for that unit
+    spawn_rate = spawn_rates[last_non_zero_index]
 
-    # runtime minutes
     if distance < 20:
         runtime = distance / speed
     else:
@@ -271,13 +328,19 @@ with st.expander("Inputs", expanded=True):
     maxclubs = c3.number_input("Max clubs", value=250, min_value=1, step=1)
 
     c4, c5, c6 = st.columns(3)
-    speed = c4.number_input("Hero speed (for runtime calc)", value=7, min_value=1, step=1)
+    speed = c4.number_input("Hero speed (for runtime & arrival)", value=7, min_value=1, step=1)
     server = c5.text_input("Server for map fetch", value=DEFAULT_SERVER)
     fullmap = c6.checkbox("Scan 180×180 (fullmap window)", value=False)
 
     st.markdown("**Cookie** source")
     c7, c8 = st.columns(2)
-    cookie_mode = c7.radio("", options=["Google Sheet", "Paste manually"], index=0, horizontal=True, label_visibility="collapsed")
+    cookie_mode = c7.radio(
+        "",
+        options=["Google Sheet", "Paste manually"],
+        index=0,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
     if cookie_mode == "Google Sheet":
         sheet_id = c7.text_input("Google Sheet ID", value=DEFAULT_SHEET_ID)
         sheet_name = c8.text_input("Sheet name", value=DEFAULT_SHEET_NAME)
@@ -290,11 +353,11 @@ with st.expander("Inputs", expanded=True):
 run_btn = st.button("Analyze oases")
 
 st.markdown("---")
-left, right = st.columns([1, 1.2])
+results_container = st.container()
 
+# --------------------------- Analyze & store in session ---------------------------
 if run_btn:
     try:
-        # Try to bypass proxies (common on restricted hosts)
         os.environ["NO_PROXY"] = "*"
         os.environ["no_proxy"] = "*"
 
@@ -302,9 +365,13 @@ if run_btn:
         if cookie is None:
             cookie = read_cookie_from_sheet(sheet_id, sheet_name)
 
+        # NEW: load active targets from log & skip those
+        active_targets = get_active_targets(sheet_id, boonie)
+
         entries = process_map_data(server, x_vil, y_vil, cookie, fullmap)
 
         if not entries:
+            st.session_state["valid_entries"] = []
             st.warning("No oasis with animals found.")
         else:
             valid_entries = []
@@ -312,6 +379,11 @@ if run_btn:
             total = len(entries)
             for idx, entry in enumerate(entries, 1):
                 progress.progress(idx / total, text=f"Evaluating {idx}/{total}")
+
+                # Skip if this oasis is already in log with future arrival
+                if (entry['x'], entry['y']) in active_targets:
+                    continue
+
                 if entry['distance'] < maxdist:
                     animals = adapt_unit_counts(entry['unit_counts'], entry['distance'], speed)
                     best = get_best_team(animals, max_clubs=maxclubs, max_ntk=20)
@@ -338,53 +410,81 @@ if run_btn:
                         })
 
             progress.empty()
-
-            if not valid_entries:
-                st.info("No entries matched your filters.")
-            else:
-                # Sort
-                valid_entries.sort(key=lambda x: x["GS/u"], reverse=True)
-
-                # Formatted lines with hyperlinked "link"
-                left.subheader("Formatted output")
-                lines = []
-                for e in valid_entries:
-                    url = build_url(e['x'], e['y'], boonie, e['nc'], e['nt'])
-                    line = (
-                        f"x: {e['x']}, y: {e['y']}, team:{e['nc']}|{e['nt']} "
-                        f"dist.: {round(e['distance'],1)},\t GS/u: {e['GS/u']},\t "
-                        f"%_lost: {e['%_lost']},\t GS: {e['GS']} "
-                        f"[link]({url})"
-                    )
-                    lines.append(line)
-                # Use unsafe_allow_html=False to keep it Markdown-safe
-                left.markdown("\n\n".join(lines))
-
-                # Table (plus a clickable link column rendered as Markdown)
-                right.subheader("Results table")
-                df = pd.DataFrame(valid_entries)
-                # add link column with markdown
-                df["link"] = df.apply(
-                    lambda r: f"[link]({build_url(r['x'], r['y'], boonie, r['nc'], r['nt'])})", axis=1
-                )
-                # show dataframe with markdown: use st.markdown with to_markdown
-                # but large tables render better with st.dataframe (which doesn't render markdown).
-                # So show a small markdown table and the raw dataframe below.
-                small_md = df[["x","y","nc","nt","distance","GS/u","%_lost","GS","link"]].to_markdown(index=False)
-                right.markdown(small_md)
-                st.download_button(
-                    "Download CSV",
-                    df.to_csv(index=False),
-                    file_name="boonie_oases.csv",
-                    mime="text/csv",
-                )
+            valid_entries.sort(key=lambda x: x["GS/u"], reverse=True)
+            st.session_state["valid_entries"] = valid_entries
+            st.session_state["meta"] = {
+                "boonie": boonie,
+                "speed": float(speed),
+                "sheet_id": sheet_id,
+            }
 
     except requests.exceptions.ProxyError as e:
         st.error("Proxy blocked the request. Run locally or on a host with unrestricted internet.")
         st.exception(e)
     except requests.HTTPError as e:
-        st.error(f"HTTP error from server.")
+        st.error("HTTP error from server.")
         st.exception(e)
     except Exception as e:
-        st.error("Unexpected error.")
+        st.error("Unexpected error during analysis.")
         st.exception(e)
+
+# --------------------------- Render from session_state ---------------------------
+valid_entries = st.session_state.get("valid_entries", [])
+meta = st.session_state.get("meta", {})
+
+if valid_entries:
+    boonie_for_results = meta.get("boonie", boonie)
+    speed_for_results = float(meta.get("speed", speed))
+    sheet_id_for_results = meta.get("sheet_id", sheet_id)
+
+    results_container.subheader("Results")
+
+    for idx, e in enumerate(valid_entries):
+        col_btn, col_text = results_container.columns([1, 9])
+
+        sent_state_key = f"sent_state_{boonie_for_results}_{e['x']}_{e['y']}"
+        sent_button_key = f"sent_btn_{boonie_for_results}_{e['x']}_{e['y']}_{idx}"
+
+        already_sent = st.session_state.get(sent_state_key, False)
+
+        sent_clicked = col_btn.button(
+            "Sent!",
+            key=sent_button_key,
+            disabled=already_sent,
+        )
+
+        # Determine display state (we want immediate “✅ SENT” feedback)
+        sent_flag = already_sent or sent_clicked
+
+        url = build_url(e['x'], e['y'], boonie_for_results, e['nc'], e['nt'])
+        prefix = "✅ SENT - " if sent_flag else ""
+        line = (
+            f"{prefix}"
+            f"x: {e['x']}, y: {e['y']}, team:{e['nc']}|{e['nt']} "
+            f"dist.: {round(e['distance'],1)},\t GS/u: {e['GS/u']},\t "
+            f"%_lost: {e['%_lost']},\t GS: {e['GS']} "
+            f"[link]({url})"
+        )
+        col_text.markdown(line)
+
+        if sent_clicked and not already_sent:
+            # Mark as sent in session state
+            st.session_state[sent_state_key] = True
+
+            # Compute arrival time: now + distance / speed (hours)
+            travel_hours = e["distance"] / float(speed_for_results)
+            arrival_time = datetime.now() + timedelta(hours=travel_hours)
+
+            # Log to Google Sheet ('log' tab)
+            try:
+                append_log_row(sheet_id_for_results, boonie_for_results, e["x"], e["y"], arrival_time)
+                st.success(
+                    f"Logged to sheet: {boonie_for_results}, {e['x']}, {e['y']}, "
+                    f"arrival {arrival_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            except Exception as log_err:
+                st.error(f"Failed to log to Google Sheet: {log_err}")
+
+elif run_btn is False:
+    # First load with no results and no run yet
+    pass

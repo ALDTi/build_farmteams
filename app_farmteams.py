@@ -284,7 +284,7 @@ def get_nodeid(x, y):
 def build_url(x, y, boonie, nclub, ntk):
     starting_part = r"https://ts6.x1.europe.travian.com/build.php?"
     village_id = BOONIE_VILIDS[boonie]
-    troop_part = f"tt=2&troop%5Bt1%5D={nclub}&troop%5Bt3%5D={ntk}&"
+    troop_part = f"tt=2&troop%5Bt1%5D={nclub}&troop%5Bt6%5D={ntk}&"
     node_id = get_nodeid(x, y)
     return (
         f"{starting_part}"
@@ -490,4 +490,5 @@ if valid_entries:
 elif run_btn is False:
     # First load with no results and no run yet
     pass
+
 

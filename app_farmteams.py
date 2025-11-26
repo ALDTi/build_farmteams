@@ -10,7 +10,8 @@ import requests
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+from google.oauth2.service_account import Credentials
+import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -20,8 +21,9 @@ GSHEET_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 @st.cache_resource
 def get_gsheet_client():
-    creds = Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=GSHEET_SCOPES
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=GSHEET_SCOPES,
     )
     return gspread.authorize(creds)
 
@@ -488,3 +490,4 @@ if valid_entries:
 elif run_btn is False:
     # First load with no results and no run yet
     pass
+

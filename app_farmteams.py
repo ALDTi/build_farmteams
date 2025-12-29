@@ -101,7 +101,7 @@ club_cost = 250
 DEFAULT_SERVER = 'ts6.x1.europe.travian.com'
 
 BOONIE_COORDS = {'C01': (-7, -90), 'C02': (133, -162), 'C03': (118, 157)}
-BOONIE_VILIDS = {'C01': 42069, 'C02': 68319, 'C03': 72888}
+BOONIE_VILIDS = {'C01': 42069, 'C02': 68319, 'C03': 81312}
 
 DEFAULT_SHEET_ID = "1Ev6h8-rTbCHoK2vNEyYpBSVs4AvJ43XzPQ3CuC6sTSw"
 DEFAULT_SHEET_NAME = "cookie"
@@ -490,6 +490,7 @@ if valid_entries:
 elif run_btn is False:
     # First load with no results and no run yet
     pass
+
 
 
 
